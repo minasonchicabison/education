@@ -123,7 +123,7 @@ jobs:
               code = asset.read_text(encoding="utf-8")
               replacements = {
                   'new URL("/sw.js",location.origin)': 'new URL("./sw.js",location.href)',
-                  'Q.pathname==="/sw.js"': `Q.pathname==="${BASE_PATH}sw.js"`,
+                  'Q.pathname==="/sw.js"': 'Q.pathname==="' + BASE_PATH + 'sw.js"',
                   'new URL(`/?goto=${encodeURIComponent(N.href)}`,location.origin)': 'new URL(`?goto=${encodeURIComponent(N.href)}`,location.href)',
                   '"/icon.png"': '"./icon.png"',
               }
