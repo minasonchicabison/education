@@ -45,13 +45,13 @@
         <iframe
           id="minason-frame"
           title="Minason Web"
-          src="https://minasonchicabison.github.io/"
+          src="./minason-web/index.html"
           width="100%"
           height="100%"
           loading="eager"
           allow="fullscreen; autoplay; clipboard-read; clipboard-write; microphone; camera; display-capture; encrypted-media; picture-in-picture; gamepad; screen-wake-lock; keyboard-map; pointer-lock"
           allowfullscreen="allowfullscreen"
-          referrerpolicy="strict-origin-when-cross-origin">
+          referrerpolicy="no-referrer">
         </iframe>
       </body>
     </html>
