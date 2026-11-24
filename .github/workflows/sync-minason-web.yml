@@ -1,0 +1,151 @@
+name: Sync Minason Web app bundle
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/sync-minason-web.yml"
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-minason-web
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out education repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch and adapt the current Minason Web build
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from urllib.request import Request, urlopen
+          from urllib.parse import urlsplit
+          import re
+          import shutil
+
+          SOURCE = "https://minasonchicabison.github.io"
+          BASE_PATH = "/gh/minasonchicabison/education@main/minason-web/"
+          OUT = Path("minason-web")
+
+          def fetch(path: str) -> bytes:
+              url = SOURCE + path
+              req = Request(url, headers={"User-Agent": "MinasonWeb-build-sync/1.0"})
+              with urlopen(req, timeout=45) as response:
+                  return response.read()
+
+          if OUT.exists():
+              shutil.rmtree(OUT)
+          OUT.mkdir(parents=True)
+
+          html = fetch("/").decode("utf-8")
+          # Keep the app's hashed Vite entry point current without hardcoding its filename.
+          paths = set(re.findall(r"""(?:src|href)=["'](/assets/[^"']+)["']""", html))
+          if not paths:
+              raise SystemExit("The deployed homepage did not expose its /assets entry point.")
+
+          required = {
+              "/sw.js",
+              "/icon.png",
+              "/scramjet/scramjet.js",
+              "/scramjet/scramjet.wasm",
+              "/controller/controller.api.js",
+              "/controller/controller.inject.js",
+              "/controller/controller.sw.js",
+          }
+          paths.update(required)
+
+          for path_with_query in sorted(paths):
+              parsed = urlsplit(path_with_query)
+              rel = parsed.path.lstrip("/")
+              target = OUT / rel
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(fetch(path_with_query))
+
+          # Make the app shell load its own copied assets from this folder.
+          html = html.replace('<head>', '<head>\n  <base href="./">', 1)
+          html = html.replace('href="/icon.png"', 'href="./icon.png"')
+          html = html.replace('src="/assets/', 'src="./assets/')
+          html = html.replace('src="/scramjet/', 'src="./scramjet/')
+          html = html.replace('src="/controller/', 'src="./controller/')
+          (OUT / "index.html").write_text(html, encoding="utf-8")
+
+          # The app expects a root worker on its own origin. Keep the worker inside
+          # the package directory so its default scope covers this app only.
+          worker = (OUT / "sw.js").read_text(encoding="utf-8")
+          worker = worker.replace(
+              'importScripts("/controller/controller.sw.js")',
+              'importScripts("./controller/controller.sw.js")'
+          )
+          (OUT / "sw.js").write_text(worker, encoding="utf-8")
+
+          # Point Scramjet resources and URL routing at this package's path on jsDelivr.
+          api_path = OUT / "controller/controller.api.js"
+          api = api_path.read_text(encoding="utf-8")
+          old_config = (
+              'prefix:"/~/sj/",'
+              'scramjetPath:"/scramjet/scramjet.js",'
+              'injectPath:"/controller/controller.inject.js",'
+              'wasmPath:"/scramjet/scramjet.wasm"'
+          )
+          new_config = (
+              f'prefix:"{BASE_PATH}~/sj/",'
+              f'scramjetPath:"{BASE_PATH}scramjet/scramjet.js",'
+              f'injectPath:"{BASE_PATH}controller/controller.inject.js",'
+              f'wasmPath:"{BASE_PATH}scramjet/scramjet.wasm"'
+          )
+          if old_config not in api:
+              raise SystemExit("Scramjet controller config did not match the expected deployed build.")
+          api_path.write_text(api.replace(old_config, new_config), encoding="utf-8")
+
+          # Keep service-worker registration and the browser's internal new-tab
+          # route within the app folder instead of sending either to the origin root.
+          asset_files = list((OUT / "assets").glob("*.js"))
+          if not asset_files:
+              raise SystemExit("No compiled application JavaScript was downloaded.")
+          for asset in asset_files:
+              code = asset.read_text(encoding="utf-8")
+              replacements = {
+                  'new URL("/sw.js",location.origin)': 'new URL("./sw.js",location.href)',
+                  'new URL(`/?goto=${encodeURIComponent(N.href)}`,location.origin)': 'new URL(`?goto=${encodeURIComponent(N.href)}`,location.href)',
+                  '"/icon.png"': '"./icon.png"',
+              }
+              for old, new in replacements.items():
+                  code = code.replace(old, new)
+              asset.write_text(code, encoding="utf-8")
+
+          # Basic guard: reject any build that still points to the old homepage.
+          combined = (OUT / "index.html").read_text(encoding="utf-8")
+          if "minasonchicabison.github.io" in combined:
+              raise SystemExit("The generated app shell still contains the old homepage origin.")
+          print(f"Mirrored {len(paths)} app resources into {OUT}.")
+          PY
+
+      - name: Commit refreshed app bundle
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add minason-web
+          if git diff --cached --quiet; then
+            echo "Minason Web bundle is already up to date."
+          else
+            git commit -m "Sync Minason Web build for embedded launcher"
+            git push
+          fi
